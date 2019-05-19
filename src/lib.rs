@@ -55,21 +55,20 @@ fn encoded_size(source_len: usize) -> usize {
     source_len << 1
 }
 
-// Unsafe since it doesn't check dst's size in release builds.
 #[inline(always)]
-unsafe fn encode_slice(src: &[u8], cfg: EncConfig, dst: &mut [u8]) {
+fn encode_slice(src: &[u8], cfg: EncConfig, dst: &mut [u8]) {
     static HEX_UPPER: &'static [u8] = b"0123456789ABCDEF";
     static HEX_LOWER: &'static [u8] = b"0123456789abcdef";
     let lut = if cfg == EncodeLower { HEX_LOWER } else { HEX_UPPER };
-    debug_assert!(dst.len() == encoded_size(src.len()));
+    assert!(dst.len() == encoded_size(src.len()));
     let mut i = 0;
     for &byte in src.iter() {
         let x = byte >> 4;
         let y = byte & 0xf;
-        let b0 = *lut.get_unchecked(x as usize);
-        let b1 = *lut.get_unchecked(y as usize);
-        *dst.get_unchecked_mut(i + 0) = b0;
-        *dst.get_unchecked_mut(i + 1) = b1;
+        let b0 = lut[x as usize];
+        let b1 = lut[y as usize];
+        dst[i + 0] = b0;
+        dst[i + 1] = b1;
         i += 2;
     }
 }
@@ -79,21 +78,8 @@ unsafe fn encode_slice(src: &[u8], cfg: EncConfig, dst: &mut [u8]) {
 fn encode_to_string(bytes: &[u8], cfg: EncConfig) -> String {
     let size = encoded_size(bytes.len());
     let mut result = String::with_capacity(size);
-    unsafe {
-        let mut buf = result.as_mut_vec();
-        buf.set_len(size);
-        encode_slice(bytes, cfg, &mut buf);
-    }
+    encode_config_buf(bytes, cfg, &mut result);
     result
-}
-
-#[cfg(feature = "std")]
-#[inline(always)]
-unsafe fn grow_vec_uninitialized(v: &mut Vec<u8>, grow_by: usize) {
-    v.reserve(grow_by);
-    let new_len = v.len() + grow_by;
-    debug_assert!(new_len <= v.capacity());
-    v.set_len(new_len);
 }
 
 /// Encode bytes as base16, using lower case characters for nibbles between
@@ -187,12 +173,12 @@ pub fn encode_config_buf<T: ?Sized + AsRef<[u8]>>(input: &T,
                                                   dst: &mut String) -> usize {
     let src = input.as_ref();
     let bytes_to_write = encoded_size(src.len());
-    unsafe {
-        let mut dst_bytes = dst.as_mut_vec();
-        let cur_size = dst_bytes.len();
-        grow_vec_uninitialized(&mut dst_bytes, bytes_to_write);
-        encode_slice(src, cfg, &mut dst_bytes.get_unchecked_mut(cur_size..));
-    }
+    let mut v: Vec<u8> = std::mem::replace(dst, String::default()).into();
+    let cur_size = v.len();
+    v.resize(cur_size + bytes_to_write, 0);
+    encode_slice(src, cfg, &mut v[cur_size..]);
+    debug_assert!(std::str::from_utf8(&v).is_ok());
+    std::mem::replace(dst, unsafe { String::from_utf8_unchecked(v) });
     bytes_to_write
 }
 
@@ -240,9 +226,7 @@ pub fn encode_config_slice<T: ?Sized + AsRef<[u8]>>(input: &T,
     if dst.len() < need_size {
         dest_too_small_enc(dst.len(), need_size);
     }
-    unsafe {
-        encode_slice(src, cfg, dst.get_unchecked_mut(..need_size));
-    }
+    encode_slice(src, cfg, &mut dst[..need_size]);
     need_size
 }
 
@@ -264,8 +248,8 @@ pub fn encode_byte(byte: u8, cfg: EncConfig) -> [u8; 2] {
     static HEX_UPPER: &'static [u8] = b"0123456789ABCDEF";
     static HEX_LOWER: &'static [u8] = b"0123456789abcdef";
     let lut = if cfg == EncodeLower { HEX_LOWER } else { HEX_UPPER };
-    let lo = unsafe { *lut.get_unchecked((byte & 15) as usize) };
-    let hi = unsafe { *lut.get_unchecked((byte >> 4) as usize) };
+    let lo = lut[(byte & 15) as usize];
+    let hi = lut[(byte >> 4) as usize];
     [hi, lo]
 }
 
@@ -364,7 +348,7 @@ impl std::error::Error for DecodeError {
 }
 
 #[inline]
-unsafe fn do_decode_slice_raw(src: &[u8], dst: &mut[u8]) -> isize {
+fn do_decode_slice_raw(src: &[u8], dst: &mut[u8]) -> isize {
     static LUT: [i8; 256] = [
         -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
         -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
@@ -382,17 +366,17 @@ unsafe fn do_decode_slice_raw(src: &[u8], dst: &mut[u8]) -> isize {
         -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
         -1, -1, -1, -1
     ];
-    debug_assert!(src.len() / 2 == dst.len());
-    debug_assert!((src.len() & 1) == 0);
+    assert!(src.len() / 2 == dst.len());
+    assert!((src.len() & 1) == 0);
     let mut si = 0;
     let mut di = 0;
     while si < src.len() {
-        let s0 = *src.get_unchecked(si);
-        let s1 = *src.get_unchecked(si.wrapping_add(1));
-        let r0 = *LUT.get_unchecked(s0 as usize);
-        let r1 = *LUT.get_unchecked(s1 as usize);
+        let s0 = src[si];
+        let s1 = src[si.wrapping_add(1)];
+        let r0 = LUT[s0 as usize];
+        let r1 = LUT[s1 as usize];
         if (r0 | r1) >= 0 {
-            *dst.get_unchecked_mut(di) = ((r0 << 4) | r1) as u8;
+            dst[di] = ((r0 << 4) | r1) as u8;
             si = si.wrapping_add(2);
             di = di.wrapping_add(1);
         } else {
@@ -406,7 +390,7 @@ unsafe fn do_decode_slice_raw(src: &[u8], dst: &mut[u8]) -> isize {
 }
 
 #[inline]
-unsafe fn decode_slice_raw(src: &[u8], dst: &mut[u8]) -> Result<(), usize> {
+fn decode_slice_raw(src: &[u8], dst: &mut[u8]) -> Result<(), usize> {
     let bad_idx = do_decode_slice_raw(src, dst);
     if bad_idx < 0 {
         Ok(())
@@ -452,11 +436,8 @@ pub fn decode<T: ?Sized + AsRef<[u8]>>(input: &T) -> Result<Vec<u8>, DecodeError
         return Err(invalid_length(src.len()));
     }
     let need_size = src.len() >> 1;
-    let mut dst = Vec::with_capacity(need_size);
-    let res = unsafe {
-        dst.set_len(need_size);
-        decode_slice_raw(src, &mut dst)
-    };
+    let mut dst = vec![0u8; need_size];
+    let res = decode_slice_raw(src, &mut dst);
     match res {
         Ok(()) => Ok(dst),
         Err(index) => Err(invalid_byte(index, src))
@@ -490,10 +471,8 @@ pub fn decode_buf<T: ?Sized + AsRef<[u8]>>(input: &T, v: &mut Vec<u8>) -> Result
     }
     let need_size = src.len() >> 1;
     let current_size = v.len();
-    let res = unsafe {
-        grow_vec_uninitialized(v, need_size);
-        decode_slice_raw(src, &mut v[current_size..])
-    };
+    v.resize(current_size + need_size, 0);
+    let res = decode_slice_raw(src, &mut v[current_size..]);
     match res {
         Ok(()) => Ok(need_size),
         Err(index) => {
@@ -538,7 +517,7 @@ pub fn decode_slice<T: ?Sized + AsRef<[u8]>>(input: &T, out: &mut [u8]) -> Resul
     if out.len() < need_size {
         dest_too_small_dec(out.len(), need_size);
     }
-    let res = unsafe { decode_slice_raw(src, &mut out[..need_size]) };
+    let res = decode_slice_raw(src, &mut out[..need_size]);
     match res {
         Ok(()) => Ok(need_size),
         Err(index) => Err(invalid_byte(index, src))
