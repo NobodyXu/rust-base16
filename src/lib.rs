@@ -115,7 +115,7 @@ unsafe fn grow_vec_uninitialized(v: &mut Vec<u8>, grow_by: usize) -> usize {
 /// Encode bytes as base16, using lower case characters for nibbles between 10
 /// and 15 (`a` through `f`).
 ///
-/// This is equivalent to `base16::encode_config(bytes, base16::EncodeUpper)`.
+/// This is equivalent to `base16::encode_config(bytes, base16::EncodeLower)`.
 ///
 /// # Example
 ///
